@@ -1,0 +1,368 @@
+```{r}
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(modeest)
+library(readxl)
+library(tidyverse)
+library(scales)
+library(tidyr)
+library(summarytools)
+library(gridExtra)
+library(viridis)
+```
+
+```{r}
+#1.
+employee_demographics <- read.csv("survey_employee_demographics.csv", na = "")
+employee_employment_details <- read_excel("survey_employee_employment_details.xlsx", na = "")
+combined_data <- merge(employee_demographics, employee_employment_details, by = "RecordID", all = TRUE)
+summary(combined_data)
+```
+```{r}
+#2. 
+#b/ 
+# Initial data cleaning: trimming whitespace, converting to lowercase, and removing duplicates
+cleaned_data <- combined_data %>%
+  mutate(
+    RecordID = str_trim(tolower(RecordID)),  
+    across(where(is.character), ~ str_trim(tolower(.)))  
+  ) %>%
+  distinct(RecordID, .keep_all = TRUE)
+
+# Convert specified columns to numeric and replace missing salary values with median
+cleaned_data <- cleaned_data %>%
+  mutate(
+    across(
+      c(TotalYearsOfExperience, 
+        YearsOfExperienceInGermany, 
+        YearlyBonusAndStocksInEUR, 
+        AnnualBonusAndStocksOneYearAgo, 
+        NumberOfVacationDays), 
+      as.numeric
+    ),
+    # Replace missing values in salary columns with their respective medians
+    YearlySalaryInEUR = ifelse(is.na(YearlySalaryInEUR), median(YearlySalaryInEUR, na.rm = TRUE), YearlySalaryInEUR),
+    AnnualSalaryOneYearAgo = ifelse(is.na(AnnualSalaryOneYearAgo), median(AnnualSalaryOneYearAgo, na.rm = TRUE), AnnualSalaryOneYearAgo)
+  )
+
+cleaned_data
+```
+
+
+```{r}
+#3
+cleaned_data <- cleaned_data %>%
+  mutate(
+    YearlySalaryInEUR = ifelse(is.infinite(YearlySalaryInEUR), NA, YearlySalaryInEUR),
+    AnnualSalaryOneYearAgo = ifelse(is.infinite(AnnualSalaryOneYearAgo), NA, AnnualSalaryOneYearAgo)
+  ) %>%
+  filter(!is.na(YearlySalaryInEUR) & !is.na(AnnualSalaryOneYearAgo))
+
+# Updated job role categorization with additional cleaning steps
+cleaned_data <- cleaned_data %>%
+  mutate(JobCategory = case_when(
+    str_detect(tolower(Position), "software engineer|backend developer|frontend developer|fullstack developer|full-stack developer|c/c++/java developer|embedded software engineer|mobile developer|ios developer|xr developer|software architekt|software architect|lead software developer|tech lead|technical lead|engineering team lead|staff engineer|software developer in test|fullstack engineer") ~ "Software Development",
+    
+    str_detect(tolower(Position), "data engineer|big data engineer|data scientist|data analyst|business analyst|bi consultant|analytics engineer|data architect|data science manager|bi it consultant|bi developer|consultant data analytics|computational linguist") ~ "Data & Analytics",
+    
+    str_detect(tolower(Position), "product manager|engineering manager|project manager|program manager|team lead|director of engineering|cto|vp engineering|head of engineering|head of it|manager|senior program manager|teamlead|team manager") ~ "Management",
+    
+    str_detect(tolower(Position), "qa engineer|test manager|testautomation|software tester|qa lead|testmanager|qa manager") ~ "Quality Assurance",
+    
+    str_detect(tolower(Position), "system administrator|network engineer|security engineer|devops|cloud architect|infrastructure engineer|security manager|sre|network administrator|systemadministrator|senior network&security engineer") ~ "Infrastructure & Security",
+    
+    str_detect(tolower(Position), "consultant|technical account manager|support engineer|erp consultant|application consultant|sap consultant|it operations manager|bi consultant") ~ "Consulting & Support",
+    
+    str_detect(tolower(Position), "recruiter|tech recruiting") ~ "Recruiting",
+    
+    str_detect(tolower(Position), "designer|ui/ux") ~ "Design",
+    
+    str_detect(tolower(Position), "sales|software sales") ~ "Sales",
+    
+    str_detect(tolower(Position), "researcher|computer vision researcher|chief research officer|professor|ai management") ~ "Research",
+    
+    str_detect(tolower(Position), "agile master|agile coach") ~ "Agile & Coaching",
+    
+    TRUE ~ "Other"
+  ))
+
+identify_outliers <- function(x) {
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  lower_bound <- q1 - 1.5 * iqr
+  upper_bound <- q3 + 1.5 * iqr
+  return(c(lower_bound, upper_bound))
+}
+
+outliers_2020 <- identify_outliers(cleaned_data$YearlySalaryInEUR)
+outliers_2019 <- identify_outliers(cleaned_data$AnnualSalaryOneYearAgo)
+
+cleaned_data_no_outliers <- cleaned_data %>%
+  filter(
+    YearlySalaryInEUR >= outliers_2020[1] & 
+    YearlySalaryInEUR <= outliers_2020[2] &
+    AnnualSalaryOneYearAgo >= outliers_2019[1] & 
+    AnnualSalaryOneYearAgo <= outliers_2019[2]
+  )
+
+
+cleaned_data_no_outliers <- cleaned_data_no_outliers[!is.na(cleaned_data_no_outliers$JobCategory) & !is.na(cleaned_data_no_outliers$YearlySalaryInEUR), ]
+
+cleaned_data_no_outliers$JobCategory_2020 <- reorder(
+  cleaned_data_no_outliers$JobCategory, 
+  cleaned_data_no_outliers$YearlySalaryInEUR, 
+  FUN = median, 
+  na.rm = TRUE
+)
+
+cleaned_data_no_outliers$JobCategory_2019 <- reorder(
+  cleaned_data_no_outliers$JobCategory, 
+  cleaned_data_no_outliers$AnnualSalaryOneYearAgo, 
+  FUN = median, 
+  na.rm = TRUE
+)
+
+boxplot_jobcat_2020 <- ggplot(cleaned_data_no_outliers, aes(x = JobCategory_2020, y = YearlySalaryInEUR / 1000)) +
+  geom_boxplot(fill = "#FFA500", color = "black", outlier.shape = 8) +
+  theme_minimal() +
+  labs(title = "Salary by Job Role (2020) - Sorted by Median",
+       x = "Job Role", y = "Annual Salary (Thousands EUR)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_discrete(limits = levels(cleaned_data_no_outliers$JobCategory_2020))  # Ensure the categories are ordered by median
+
+print(boxplot_jobcat_2020)
+
+boxplot_jobcat_2019 <- ggplot(cleaned_data_no_outliers, aes(x = JobCategory_2019, y = AnnualSalaryOneYearAgo / 1000)) +
+  geom_boxplot(fill = "#FFA500", color = "black", outlier.shape = 8) +
+  theme_minimal() +
+  labs(title = "Salary by Job Role (2019) - Sorted by Median",
+       x = "Job Role", y = "Annual Salary (Thousands EUR)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_discrete(limits = levels(cleaned_data_no_outliers$JobCategory_2019))  # Ensure the categories are ordered by median
+
+print(boxplot_jobcat_2019)
+
+median_salary_2020 <- cleaned_data_no_outliers %>%
+  group_by(JobCategory) %>%
+  summarize(Median_Salary_2020 = median(YearlySalaryInEUR, na.rm = TRUE)) %>%
+  arrange(Median_Salary_2020)
+
+median_salary_2019 <- cleaned_data_no_outliers %>%
+  group_by(JobCategory) %>%
+  summarize(Median_Salary_2019 = median(AnnualSalaryOneYearAgo, na.rm = TRUE)) %>%
+  arrange(Median_Salary_2019)
+
+median_salary_comparison <- median_salary_2020 %>%
+  left_join(median_salary_2019, by = "JobCategory")
+
+print(median_salary_comparison)
+```
+```{r}
+#4.
+cleaned_data_no_outliers <- cleaned_data_no_outliers %>%
+  filter(!is.na(TotalYearsOfExperience) & !is.na(YearsOfExperienceInGermany))
+
+cleaned_data_no_outliers <- cleaned_data_no_outliers %>%
+  mutate(ExperienceRange = case_when(
+    TotalYearsOfExperience >= 0 & TotalYearsOfExperience < 1 ~ "0-1 years",
+    TotalYearsOfExperience >= 1 & TotalYearsOfExperience < 3 ~ "1-3 years",
+    TotalYearsOfExperience >= 3 & TotalYearsOfExperience < 5 ~ "3-5 years",
+    TotalYearsOfExperience >= 5 & TotalYearsOfExperience < 10 ~ "5-10 years",
+    TotalYearsOfExperience >= 10 & TotalYearsOfExperience < 20 ~ "10-20 years",
+    TotalYearsOfExperience >= 20 ~ "20+ years",
+    TRUE ~ NA_character_
+  ))
+
+cleaned_data_no_outliers <- cleaned_data_no_outliers %>%
+  mutate(ExperienceGermanyRange = case_when(
+    YearsOfExperienceInGermany >= 0 & YearsOfExperienceInGermany < 1 ~ "0-1 years",
+    YearsOfExperienceInGermany >= 1 & YearsOfExperienceInGermany < 3 ~ "1-3 years",
+    YearsOfExperienceInGermany >= 3 & YearsOfExperienceInGermany < 5 ~ "3-5 years",
+    YearsOfExperienceInGermany >= 5 & YearsOfExperienceInGermany < 10 ~ "5-10 years",
+    YearsOfExperienceInGermany >= 10 & YearsOfExperienceInGermany < 20 ~ "10-20 years",
+    YearsOfExperienceInGermany >= 20 ~ "20+ years",
+    TRUE ~ NA_character_
+  ))
+
+plot_total_exp_2020 <- ggplot(cleaned_data_no_outliers, aes(x = factor(ExperienceRange, 
+                                                                levels = c("0-1 years", "1-3 years", "3-5 years", 
+                                                                           "5-10 years", "10-20 years", "20+ years")), 
+                                                   y = YearlySalaryInEUR / 1000)) +
+  geom_boxplot(fill = "#FFA500", outlier.shape = 16, outlier.size = 2) +
+  labs(title = "Annual Salary Distribution (2020) by Total Experience",
+       x = "Experience Range",
+       y = "Annual Salary (Thousands EUR)") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  ) +
+  scale_y_continuous(labels = scales::comma)
+
+plot_german_exp_2020 <- ggplot(cleaned_data_no_outliers, aes(x = factor(ExperienceGermanyRange, 
+                                                                levels = c("0-1 years", "1-3 years", "3-5 years", 
+                                                                           "5-10 years", "10-20 years", "20+ years")), 
+                                                   y = YearlySalaryInEUR / 1000)) +
+  geom_boxplot(fill = "#FFA500", outlier.shape = 16, outlier.size = 2) +
+  labs(title = "Annual Salary Distribution (2020) by Experience in Germany",
+       x = "Experience in Germany Range",
+       y = "Annual Salary (Thousands EUR)") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  ) +
+  scale_y_continuous(labels = scales::comma)
+
+
+plot_category_exp_2020 <- ggplot(cleaned_data_no_outliers, 
+                                aes(x = factor(ExperienceRange,
+                                             levels = c("0-1 years", "1-3 years", "3-5 years",
+                                                      "5-10 years", "10-20 years", "20+ years")),
+                                    y = YearlySalaryInEUR / 1000)) +
+  geom_boxplot(aes(fill = JobCategory)) +
+  facet_wrap(~ JobCategory, scales = "free_y") +
+  labs(title = "Salary Distribution (2020) by Job Category and Experience",
+       x = "Experience Range",
+       y = "Annual Salary (Thousands EUR)",
+       fill = "Job Category") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  ) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_fill_brewer(palette = "Set3")
+
+print(plot_total_exp_2020)
+print(plot_german_exp_2020)
+print(plot_category_exp_2020)
+
+```
+```{r}
+#5.
+cleaned_data_no_outliers <- cleaned_data_no_outliers %>%
+  mutate(ProgrammingCategory = case_when(
+    str_detect(tolower(YourMainProgrammingLanguage), "javascript|js") ~ "JavaScript",
+    str_detect(tolower(YourMainProgrammingLanguage), "typescript|ts") ~ "TypeScript",
+    str_detect(tolower(YourMainProgrammingLanguage), "python|django") ~ "Python",
+    str_detect(tolower(YourMainProgrammingLanguage), "^java$|^java,|,java") ~ "Java",
+    str_detect(tolower(YourMainProgrammingLanguage), "c\\+\\+|cpp") ~ "C++",
+    str_detect(tolower(YourMainProgrammingLanguage), "c#|\\.net") ~ "C#",
+    str_detect(tolower(YourMainProgrammingLanguage), "go|golang") ~ "Go",
+    str_detect(tolower(YourMainProgrammingLanguage), "sql") ~ "SQL",
+    TRUE ~ "Other"
+  )) %>%
+  mutate(MainLanguageAtWork = case_when(
+    MainLanguageAtWork == "english" ~ "english",
+    MainLanguageAtWork == "german" ~ "german",
+    MainLanguageAtWork == "russian" ~ "russian",
+    MainLanguageAtWork == "polish" ~ "polish",
+    MainLanguageAtWork == "czech" ~ "czech",
+    MainLanguageAtWork == "italian" ~ "italian",
+    MainLanguageAtWork == "french" ~ "french",
+    MainLanguageAtWork == "spanish" ~ "spanish",
+    MainLanguageAtWork %in% c("english and german", "deuglisch") ~ "English & German",
+    MainLanguageAtWork %in% c("russian, english", "pусский") ~ "Russian & English",
+    MainLanguageAtWork %in% c("50/50", "both") ~ "Multiple Languages",  
+    is.na(MainLanguageAtWork) ~ "Missing", 
+    TRUE ~ "Other" 
+  ))%>%
+
+  mutate(CompanySizeCategory = case_when(
+    CompanySize %in% c("up to 10", "11-50") ~ "Small (<50)",
+    CompanySize %in% c("51-100", "101-1000") ~ "Medium (51-1000)",
+    CompanySize == "1000+" ~ "Large (1000+)",
+    TRUE ~ "Other"
+  )) %>%
+  mutate(CompanyTypeCategory = case_when(
+    str_detect(tolower(CompanyType), "product|startup|saas|faang") ~ "Tech Product/ Startups",
+    str_detect(tolower(CompanyType), "consult|service|outsource") ~ "Consulting/Services",
+    str_detect(tolower(CompanyType), "bank|fintech|finance|insurance") ~ "Finance/Fintech",
+    str_detect(tolower(CompanyType), "corporate|enterprise") ~ "Corporate/Enterprise",
+    TRUE ~ "Other"
+  )) 
+
+work_lang_box_range <- ggplot(cleaned_data_no_outliers %>% filter(MainLanguageAtWork != "Missing"), 
+    aes(x = reorder(MainLanguageAtWork, YearlySalaryInEUR), 
+        y = YearlySalaryInEUR/1000, fill = MainLanguageAtWork)) +
+  geom_boxplot(alpha = 0.7) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), 
+    panel.grid.minor = element_blank(),
+    legend.position = "none"  
+  ) +
+  labs(title = "Work Language Salary Range",
+       x = "Work Language",
+       y = "Salary (Thousands EUR)")
+work_lang_box_range
+
+prog_lang_box_simplified <- ggplot(cleaned_data_no_outliers, 
+    aes(x = reorder(ProgrammingCategory, YearlySalaryInEUR), 
+        y = YearlySalaryInEUR/1000, fill = ProgrammingCategory)) +
+  geom_boxplot(alpha = 0.7) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    legend.position = "none" 
+  ) +
+  labs(title = "Programming Language Salary Distribution",
+       x = "Programming Language",
+       y = "Salary (Thousands EUR)")
+prog_lang_box_simplified
+
+size_exp_boxplot <- ggplot(cleaned_data_no_outliers %>% filter(CompanySizeCategory != "Other"),
+    aes(x = CompanySizeCategory, 
+        y = YearlySalaryInEUR/1000, fill = CompanySizeCategory)) +
+  geom_boxplot(alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Salary Distribution by Company Size",
+       x = "Company Size",
+       y = "Salary (Thousands EUR)",
+       fill = "Company Size") +
+  theme(
+    legend.position = "none"  
+  )
+size_exp_boxplot
+
+
+type_box_simplified <- ggplot(cleaned_data_no_outliers, 
+    aes(x = reorder(CompanyTypeCategory, YearlySalaryInEUR), 
+        y = YearlySalaryInEUR/1000, fill = CompanyTypeCategory)) +
+  geom_boxplot(alpha = 0.7) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    legend.position = "none"  
+  ) +
+  labs(title = "Company Type Salary Distribution",
+       x = "Company Type",
+       y = "Salary (Thousands EUR)")
+type_box_simplified
+
+
+```
+
+
+
+
+
